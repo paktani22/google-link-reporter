@@ -21,21 +21,17 @@ export default {
         message.text.match(/https?:\/\/[^\s<>"']+/gi) || [];
 
       const urls = [
-        ...new Set(
-          found.map(url => url.replace(/[),.!?;:]+$/g, ""))
-        )
+        ...new Set(found.map(url => url.replace(/[),.!?;:]+$/g, "")))
       ].slice(0, 50);
 
-      if (urls.length === 0) {
-        return new Response("OK");
-      }
+      if (!urls.length) return new Response("OK");
 
-      if (!env.GOOGLE_SAFE_BROWSING_KEY) {
-        throw new Error("Secret GOOGLE_SAFE_BROWSING_KEY belum tersedia.");
-      }
-
-      if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
-        throw new Error("Secret Telegram belum lengkap.");
+      if (
+        !env.GOOGLE_SAFE_BROWSING_KEY ||
+        !env.TELEGRAM_BOT_TOKEN ||
+        !env.TELEGRAM_CHAT_ID
+      ) {
+        throw new Error("Secret Google atau Telegram belum lengkap.");
       }
 
       const sender = message.from.username
@@ -47,7 +43,7 @@ export default {
       for (const link of urls) {
         try {
           const apiUrl = new URL(
-            "https://safebrowsing.googleapis.com/v5/urls:search"
+            "https://safebrowsing.googleapis.com/v4/threatMatches:find"
           );
 
           apiUrl.searchParams.set(
@@ -55,18 +51,37 @@ export default {
             env.GOOGLE_SAFE_BROWSING_KEY
           );
 
-          apiUrl.searchParams.append("urls", link);
+          const response = await fetch(apiUrl.toString(), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              client: {
+                clientId: "google-link-reporter",
+                clientVersion: "1.0"
+              },
+              threatInfo: {
+                threatTypes: [
+                  "MALWARE",
+                  "SOCIAL_ENGINEERING",
+                  "UNWANTED_SOFTWARE"
+                ],
+                platformTypes: ["ANY_PLATFORM"],
+                threatEntryTypes: ["URL"],
+                threatEntries: [{ url: link }]
+              }
+            })
+          });
 
-          const response = await fetch(apiUrl.toString());
           const raw = await response.text();
-
           let data;
 
           try {
             data = JSON.parse(raw);
           } catch {
             throw new Error(
-              "Respons Google bukan JSON. HTTP " + response.status
+              "Respons Google tidak valid. HTTP " + response.status
             );
           }
 
@@ -77,18 +92,15 @@ export default {
             );
           }
 
-          const threats = data.threats || [];
+          const matches = data.matches || [];
 
-          if (threats.length > 0) {
+          if (matches.length > 0) {
             const types = [
-              ...new Set(
-                threats.flatMap(item => item.threatTypes || [])
-              )
+              ...new Set(matches.map(item => item.threatType))
             ];
 
             results.push(
-              "BERBAHAYA\n" +
-              link +
+              "BERBAHAYA\n" + link +
               "\nJenis ancaman: " + types.join(", ")
             );
           } else {
@@ -100,8 +112,7 @@ export default {
           }
         } catch (error) {
           results.push(
-            "GAGAL DIPERIKSA\n" +
-            link +
+            "GAGAL DIPERIKSA\n" + link +
             "\nPenyebab: " + String(error.message || error)
           );
         }
@@ -129,9 +140,9 @@ export default {
       );
 
       if (!telegramResponse.ok) {
-        return new Response(
-          "Telegram error: " + await telegramResponse.text(),
-          { status: 500 }
+        throw new Error(
+          "Telegram gagal mengirim: " +
+          await telegramResponse.text()
         );
       }
 
