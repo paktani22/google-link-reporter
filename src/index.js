@@ -1,35 +1,17 @@
 
 const JUDI_STRONG = [
-  "judi online",
-  "judi togel",
-  "togel online",
-  "slot online",
-  "casino online",
-  "kasino online",
-  "taruhan online",
-  "sportsbook",
-  "agen togel",
-  "situs togel",
-  "situs slot",
-  "bet online",
-  "bandar togel",
-  "live casino"
+  "judi online", "judi togel", "togel online",
+  "slot online", "casino online", "kasino online",
+  "taruhan online", "sportsbook", "agen togel",
+  "situs togel", "situs slot", "bet online",
+  "bandar togel", "live casino"
 ];
 
 const JUDI_SUPPORT = [
-  "deposit",
-  "withdraw",
-  "jackpot",
-  "maxwin",
-  "rtp slot",
-  "spin slot",
-  "bonus member",
-  "daftar slot",
-  "bocoran togel",
-  "pasaran togel",
-  "pragmatic play",
-  "mahjong ways",
-  "pola slot",
+  "deposit", "withdraw", "jackpot", "maxwin",
+  "rtp slot", "spin slot", "bonus member",
+  "daftar slot", "bocoran togel", "pasaran togel",
+  "pragmatic play", "mahjong ways", "pola slot",
   "taruhan bola"
 ];
 
@@ -57,33 +39,28 @@ function inspectJudi(domain, content) {
     text.includes(word)
   );
 
-  const detected =
-    strong.length >= 1 ||
-    supporting.length >= 3;
-
   return {
-    detected,
+    detected: strong.length >= 1 || supporting.length >= 3,
     strong,
     supporting
   };
 }
 
-async function inspectWebsite(link) {
-  const original = new URL(link);
-
-  if (!["http:", "https:"].includes(original.protocol)) {
+// Memeriksa URL agar tidak mengarah ke alamat lokal/privat.
+function validateUrl(url) {
+  if (!["http:", "https:"].includes(url.protocol)) {
     throw new Error("Protokol URL tidak diizinkan.");
   }
 
   if (
-    original.username ||
-    original.password ||
-    original.port && !["80", "443"].includes(original.port)
+    url.username ||
+    url.password ||
+    (url.port && !["80", "443"].includes(url.port))
   ) {
     throw new Error("Format URL tidak diizinkan.");
   }
 
-  const host = original.hostname.toLowerCase();
+  const host = url.hostname.toLowerCase();
 
   if (
     host === "localhost" ||
@@ -91,14 +68,40 @@ async function inspectWebsite(link) {
     host.endsWith(".local") ||
     host.endsWith(".internal") ||
     host === "metadata.google.internal" ||
-    /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(host) ||
-    host === "::1" ||
     host.startsWith("[")
   ) {
     throw new Error("Alamat lokal atau privat tidak diizinkan.");
   }
 
-  let current = original;
+  // Blokir alamat IPv4 privat dan alamat khusus.
+  const parts = host.split(".");
+
+  if (
+    parts.length === 4 &&
+    parts.every(part => /^\d+$/.test(part))
+  ) {
+    const ip = parts.map(Number);
+
+    if (
+      ip.some(n => n < 0 || n > 255) ||
+      ip[0] === 0 ||
+      ip[0] === 10 ||
+      ip[0] === 127 ||
+      ip[0] >= 224 ||
+      (ip[0] === 100 && ip[1] >= 64 && ip[1] <= 127) ||
+      (ip[0] === 169 && ip[1] === 254) ||
+      (ip[0] === 172 && ip[1] >= 16 && ip[1] <= 31) ||
+      (ip[0] === 192 && ip[1] === 168)
+    ) {
+      throw new Error("Alamat IP privat atau khusus tidak diizinkan.");
+    }
+  }
+
+  return url;
+}
+
+async function inspectWebsite(link) {
+  let current = validateUrl(new URL(link));
 
   for (let i = 0; i < 4; i++) {
     const response = await fetch(current.toString(), {
@@ -111,6 +114,7 @@ async function inspectWebsite(link) {
       signal: AbortSignal.timeout(8000)
     });
 
+    // Ikuti redirect, tetapi periksa alamat tujuan terlebih dahulu.
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
 
@@ -118,63 +122,67 @@ async function inspectWebsite(link) {
         throw new Error("Redirect tidak memiliki alamat tujuan.");
       }
 
-      const next = new URL(location, current);
-
-      if (!["http:", "https:"].includes(next.protocol)) {
-        throw new Error("Redirect tidak diizinkan.");
-      }
-
+      const next = validateUrl(new URL(location, current));
       current = next;
       continue;
     }
 
-    if (!response.ok) {
-      throw new Error("Website memberikan HTTP " + response.status);
+    const status = response.status;
+
+    const statusLabel =
+      status >= 400
+        ? "HALAMAN ERROR"
+        : "AKTIF";
+
+    const contentType =
+      response.headers.get("content-type") || "";
+
+    let content = "";
+
+    if (
+      contentType.toLowerCase().includes("text/html") &&
+      response.body
+    ) {
+      const reader = response.body.getReader();
+      const chunks = [];
+      let total = 0;
+
+      while (total < 150000) {
+        const { done, value } = await reader.read();
+
+        if (done) break;
+
+        const remaining = 150000 - total;
+        const chunk = value.slice(0, remaining);
+
+        chunks.push(chunk);
+        total += chunk.length;
+
+        if (chunk.length < value.length) break;
+      }
+
+      await reader.cancel().catch(() => {});
+
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      content = cleanText(
+        new TextDecoder().decode(bytes)
+      );
     }
-
-    const type = response.headers.get("content-type") || "";
-
-    if (!type.includes("text/html")) {
-      throw new Error("Halaman bukan HTML.");
-    }
-
-    if (!response.body) {
-      throw new Error("Isi halaman tidak tersedia.");
-    }
-
-    const reader = response.body.getReader();
-    const chunks = [];
-    let total = 0;
-
-    while (total < 150000) {
-      const { done, value } = await reader.read();
-
-      if (done) break;
-
-      const remaining = 150000 - total;
-      const chunk = value.slice(0, remaining);
-
-      chunks.push(chunk);
-      total += chunk.length;
-
-      if (chunk.length < value.length) break;
-    }
-
-    await reader.cancel().catch(() => {});
-
-    const bytes = new Uint8Array(total);
-    let offset = 0;
-
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    const html = new TextDecoder().decode(bytes);
 
     return {
       domain: current.hostname,
-      content: cleanText(html)
+      finalUrl: current.toString(),
+      content,
+      httpStatus: status,
+      statusLabel,
+      isHtml: contentType.toLowerCase().includes("text/html")
     };
   }
 
@@ -277,6 +285,7 @@ export default {
       for (const link of urls) {
         const details = ["LINK: " + link];
 
+        // Google Safe Browsing
         try {
           const matches = await checkGoogle(
             link,
@@ -304,31 +313,53 @@ export default {
           );
         }
 
+        // Pemeriksaan status domain dan halaman
         try {
           const page = await inspectWebsite(link);
 
-          const judi = inspectJudi(
-            page.domain,
-            page.content
+          details.push(
+            "STATUS DOMAIN: " + page.statusLabel,
+            "HTTP STATUS: " + page.httpStatus,
+            "DOMAIN AKHIR: " + page.domain
           );
 
-          if (judi.detected) {
+          if (page.statusLabel === "HALAMAN ERROR") {
             details.push(
-              "KLASIFIKASI: DUGAAN JUDI ONLINE",
-              "Indikator: " +
-              [...judi.strong, ...judi.supporting].join(", ")
-            );
-          } else {
-            details.push(
-              "KLASIFIKASI: Tidak ditemukan indikasi kuat judi online"
+              "Keterangan: Domain merespons, tetapi halaman memberikan error."
             );
           }
 
-          details.push(
-            "PEMERIKSAAN WEBSITE: Berhasil membaca halaman"
-          );
+          // Deteksi indikasi judi online
+          if (page.isHtml) {
+            const judi = inspectJudi(
+              page.domain,
+              page.content
+            );
+
+            if (judi.detected) {
+              details.push(
+                "KLASIFIKASI: DUGAAN JUDI ONLINE",
+                "Indikator: " +
+                [...judi.strong, ...judi.supporting].join(", ")
+              );
+            } else {
+              details.push(
+                "KLASIFIKASI: Tidak ditemukan indikasi kuat judi online"
+              );
+            }
+
+            details.push(
+              "PEMERIKSAAN WEBSITE: Berhasil membaca halaman"
+            );
+          } else {
+            details.push(
+              "PEMERIKSAAN WEBSITE: Halaman bukan HTML",
+              "KLASIFIKASI JUDI: Belum dapat dipastikan"
+            );
+          }
         } catch (error) {
           details.push(
+            "STATUS DOMAIN: TIDAK DAPAT DIAKSES",
             "PEMERIKSAAN WEBSITE: GAGAL",
             "Keterangan: " + error.message,
             "KLASIFIKASI JUDI: Belum dapat dipastikan"
